@@ -1,0 +1,153 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Elena Sophia"
+date: "October 30, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+set.seed(10-30-2016) 
+
+# clear out workspace
+rm(list = ls())
+
+suppressMessages(library(dplyr))
+suppressMessages(library(ggplot2))
+suppressMessages(library(caret))
+suppressMessages(library(randomForest))
+suppressMessages(library(rpart))
+#   suppressMessages(library(gridExtra))
+
+setwd("~/Coursera Data Science/Practical Machine Learning/Project/")
+```
+
+Practical Machine Learning course focuses on developing the tools and techniques for understanding, building, and testing prediction functions.  For the course project we are using Weight Lifting Exercises Data set kindly shared by the authors of the paper below:  
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human 2013) . Stuttgart, Germany: ACM SIGCHI, 2013. 
+
+From the http://groupware.les.inf.puc-rio.br/har#weight_lifting_exercises website:
+
+*Human Activity Recognition - HAR - has emerged as a key research area in the last years and is gaining increasing attention by the pervasive computing research community, especially for the development of context-aware systems. There are many potential applications for HAR, like: elderly monitoring, life log systems for monitoring energy expenditure and for supporting weight-loss programs, and digital assistants for weight lifting exercises.*
+
+*Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A) and four classes correspond to common mistakes: throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).* 
+
+
+The goal of the course project is to predict the manner in which each participant the exercise.
+
+## Exploratory Data Analysis
+
+```{r read csv data remove NULL columns, include=FALSE} 
+
+testingD <- read.csv("pml-testing.csv")
+trainingD <- read.csv("pml-training.csv")
+
+inputDims <- dim(trainingD)
+
+#   Identify NULL columns in the testing data set
+
+blankCols <-  c(NULL)
+blankIdx <- c(NULL)
+cols <- dim(testingD)
+
+for ( i in 1 : cols[2]) {  if (sum(is.na(testingD[, i])) == cols[1] ) { 
+  blankCols <- c(blankCols, names(testingD)[i])
+  blankIdx <- c(blankIdx, i)   }}
+
+training <- trainingD[, -blankIdx]
+testing <- testingD[, -blankIdx]
+
+saveRDS(training, "Training_Data_In_NARROW.rds")
+saveRDS(testing, "Testing_Data_In_NARROW.rds")
+
+remove(trainingD, testingD, testing, blankIdx, blankCols, i, cols)
+```
+
+Two data sets (training and testing for the final quiz) were downloaded into the working directory.  There were `r inputDims[2]` variables and  `r inputDims[1]` records in the training data set, including some statistics such as average, standard deviation, variance, etc.  To exclude irrelevant data, I used the final testing data set to identify variables used in the final quiz and limited both sets to those fields only.  This left my training data set with `r dim(training)[2]` variables.
+
+To visualize the data I created individual time line for each participant using raw_timestamp_part_1 measuring exercize time in seconds and raw_time stamp_part_2 capturing microseconds and built plots for different measurements.  For example, plot below shows magnet_arm_z data.  Other measurements have similar plots.  
+
+
+
+```{r EDA plot data, include=FALSE}
+
+#   Create individual timeline for each participant
+
+trainingTime <- training %>%
+                select(user_name, raw_timestamp_part_1) %>%
+                group_by(user_name)%>%
+                summarize(startTime1 = min(raw_timestamp_part_1))%>%
+                ungroup(user_name)
+
+time2Power <- round(log10(max(training$raw_timestamp_part_2))) 
+training <- merge(training, trainingTime)
+
+training <- mutate(training,
+                    timeLine = raw_timestamp_part_1 - startTime1 +
+                               raw_timestamp_part_2 / '^'(10, time2Power))
+```
+
+```{r EDA plot, echo=FALSE}
+
+qplot(timeLine, magnet_arm_z, data = training, 
+                color = classe, facets = user_name~.,
+                xlab = "Time Line (seconds)"  )
+
+rm(training, time2Power, trainingTime, inputDims)
+```
+
+
+We can see how individual styles of each participant and different ways of doing the exercise are reflected in the data, as well some as data quality problems: class does not always reflect actual manner of the exercise.  It looks like the class was assigned based solely on the counts (class A for the first ten repetitions, class B for the next ten, and so on).  Only Pedro data exhibits clear correlation between the fashion of the exercise and assigned class.  Adelmo, Carlitos, and Jeremy plots show that some of class A repetitions were classified as class B ones.   Charles got all classes spanning two different exercise styles.  
+
+Since we have the participant name and both raw_timestamp_part_1 and raw_time stamp_part_2 in our quiz data, just looking at this chart allows us to determine class for each test case.  Since this is not the point of this data science course, we move on to the machine learning modeling. 
+
+
+
+```{r data split , echo=FALSE}
+##  Splitting data into training and testing sets for cross validation
+
+trainingData <- readRDS("Training_Data_In_NARROW.rds")
+
+#   Remove record number and time line data 
+trainingData <- trainingData[, -c(1, 3, 4, 5)]
+
+inTrain <- createDataPartition(trainingData$classe, p = 3/4)[[1]]
+training <- trainingData[inTrain,]
+testing <- trainingData[-inTrain,]
+
+saveRDS(training, "Training_Data.rds")
+saveRDS(testing, "Testing_Data.rds")
+
+rm(trainingData, inTrain)
+
+```
+
+I am working on a PC with one processor and 4GB of RAM.  For some reason caret's train function did not work for me: the run times were very unreasonable.  I found that calling rpart and random forest packages directly was the only way I could do the project. 
+
+
+##    Building rpart model
+
+```{r rpart model}
+
+fitRP <- rpart(classe ~ . , data=training, method="class")
+
+predictRP <- predict(fitRP, testing, type = "class")
+cmRP <- confusionMatrix(predictRP, testing$classe)
+
+cmRP
+```
+
+##    Building random forest model
+
+```{r random forest} 
+fitRF <- randomForest(classe ~ . , data = training)
+ #                     preProcess = c("center", "scale"))
+predictRF <- predict(fitRF, testing, type = "class")
+cmRF <- confusionMatrix(predictRF, testing$classe)
+
+cmRF
+```
+
+##  Model Selection
+
+Random Forest model showed superior prediction power with accuracy of `r round(cmRF$overall['Accuracy'], 3)` compared to `r round(cmRP$overall['Accuracy'], 3)` for the rpart model.  Out of sample errors are `r round(1-cmRF$overall['Accuracy'], 3)` and `r round(1-cmRP$overall['Accuracy'], 3)` respectively.
